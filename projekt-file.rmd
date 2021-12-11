@@ -1,0 +1,291 @@
+---
+title: "Projekt"
+author: "Maja Rojek"
+date: "24 11 2021"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+---
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(DT)
+library(readxl)
+library(zoo)
+library(ggplot2) 
+library(corrplot)
+library(tibble)
+library(caret)
+library(randomForest)
+```
+
+
+```{r setup, include=FALSE, cache=TRUE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+
+prettyTable <- function(table_df, round_digits=2) {
+    DT::datatable(table_df, 
+                  style="bootstrap", 
+                  filter = "top", 
+                  rownames = FALSE, 
+                  extensions = "Buttons", 
+                  options = list(dom = 'Bfrtip', 
+                                 buttons = c('copy', 'csv', 'excel', 'pdf', 'print'))) %>% 
+    formatRound(names(dplyr::select_if(table_df, is.numeric)), round_digits)
+}
+
+get_year <- function(value) { 
+  substr(value, 0,4) 
+}
+
+```
+
+
+# Przedstawienie analizy
+
+Mówi się, że kraje wyspiarskie mają inną mentalność niż pozostałe państwa świata. Determinowany położeniem, izolacją i niekiedy specyficznym klimatem styl życia jest widoczny w mniejszym lub większym stopniu. Australia jako kontynent wyspiarski ma opinię regionu o szczególnie wyróżniającym się usposobieniu jego mieszkańców, które to często określane jest jako "laid back" lub "no-worries", co w wolnym tłumaczeniu oznacza po prostu "wyluzowany". Czy tak faktycznie jest?
+Przeprowadzona analiza ma za zadanie sprawdzić jaki (i czy w ogólr jakikolwiek) wpływ na Australijczyków mają światowe zmiany gospodarcze.
+
+Przykładowy artykuł o tej tematyce: https://www.bbc.com/travel/article/20170607-why-are-australians-so-laid-back
+
+# Wnioski
+
+Okazuje się, że Australia nie jest tak odporna na wpływ światowej gospodarki jakby się mogło wydawać. Znaczenie ma przede wszystkim poziom inflacji oraz cen złota, jednak wbrew pozorom gorsza sytuacja na rynku globalnym oznacza mniej śmiertelnych wypadków w Australii. Zatem zamiast z niepokojem patrzeć na rosnące słupki, można pomyśleć ile żyć zostaje właśnie uratowanych!
+
+# Dane
+
+## Currency Exchange Rates
+ 
+```{r currency data reading}
+Currency_Exchange_Rates <- read.csv("./CurrencyExchangeRates.csv")
+prettyTable(sample_n(Currency_Exchange_Rates, 10))
+```
+
+Dane dotyczą dziennego kursu wymiany walut w latach 1995-2018 względem Dolara Amerykańskiego. Ze względu na obiekt analizy, dane zostały ograniczone jedynie do informacji o Dolarze Australijskim. Ponadto informacje zostały zawężone do średniej wartości waluty na rok, a także pod uwagę są wzięte jedynie informacje o latach 2000-2018, aby uspójnić format z pozostałymi zbiorami danych. Wartości puste zostanły zignorowane, ponieważ ich brak nie wpłynie negatywnie na wiarygodność danych.
+
+```{r currency data refactoring}
+aus_dollar <- Currency_Exchange_Rates %>%  mutate(Year = get_year(Date)) %>% select(Year, Australian.Dollar)  %>% filter(Year %in% c(2000:2018))
+aus_dollar <- aggregate(.~ Year, aus_dollar, mean, na.rm =TRUE, na.action = na.pass)
+ 
+ggplot(aus_dollar,aes(x=Year, y=Australian.Dollar, group=1)) + geom_line() + geom_point() + ggtitle("Wartość Dolara Australijskiego [w USD] w latach 2000-2018") 
+```
+
+## Gold Prices
+
+```{r gold prices data reading}
+Gold_prices <- read.csv("./Gold prices.csv")
+prettyTable(sample_n(Gold_prices, 10))
+```
+
+Dane obejmują informacje o dziennej cenie złota w Dolarach Amerykańskich na przestrzeni lat 1968-2021. Zawarty jest także podział na dane zebrane w godzinach przedpołudniowych oraz popołudniowych. Do analizy Zgodnie z kowencją wartości są uśredniane do wartości z całego dnia, a następnie ponownie uśredniane z dokładnością do roku. Lata zaś dane ograniczone do wartości 2000-2018.
+
+```{r gold prices data refactoring}
+gold <- Gold_prices %>% mutate(Date = get_year(Date)) %>% filter(Date %in% c(2000:2018))
+gold$Gold_Price <- rowMeans(gold[,c('USD..AM.', 'USD..PM.')], na.rm=TRUE)
+gold <- gold %>% select(Date, Gold_Price)
+gold <- aggregate(.~ Date, gold, mean, na.rm =TRUE, na.action = na.pass)
+ggplot(gold,aes(x=Date, y=Gold_Price, group=1)) + geom_line() + geom_point() + ggtitle("Ceny złota [w USD] w latach 2000-2018") 
+```
+
+## S&P Composite
+
+
+```{r sp composite data reading}
+S_P_Composite <- read.csv("./S&P Composite.csv")
+prettyTable(sample_n(S_P_Composite, 10))
+```
+
+W zbiorze przedstawione zostały dane
+
+```{r sp composite data refactoring}
+sp <- S_P_Composite %>% mutate(Year = get_year(Year)) %>% filter(Year %in% c(2000:2018))
+sp <- aggregate(.~ Year, sp, mean, na.rm =TRUE, na.action = na.pass)
+```
+
+Ze względu na mnogość informacji w tym zbiorze i potenjalne powiązanie ich ze sobą, dane zostały ze sobą porównane w celu znalezienia korelacji. Jeżeli korelacja pomiędzy kilkoma atrybutami jest wysoka (~0.8), zamiast przekazywać do dalszej analizy cały zbiór, można ograniczyć dane do wartości wybranego atrybutu. Na poniższym wykresie można zauważyć silną korelację atrybutów Divident, Real Divident, Earnings, Sp Composite z atrybutem CPI, a także silną odwrotną korelację Long Interest Rate z tymże atrybutem. Z kolei atrybut Real Earnings jest mocno skorelowany z Earnings, a Real Price ze wspomnianym już SP Composite. Zatem do dalszej analizy warto przkazać praktycznie niezależne od siebie atrybuty CPI oraz Cyclically Adjusted PE Ratio.
+
+``` {r sp correlation}
+res <- cor(sp[-1])
+corrplot(res, type="upper", order="hclust", tl.col="black", tl.srt=45)
+sp <- sp %>% select(c("CPI", "Cyclically.Adjusted.PE.Ratio", "Year"))
+```
+
+## Bitcoin
+
+```{r bitcoin data reading}
+Bchain_Trvou <- read.csv("./BCHAIN-TRVOU.csv")
+Bchain_Mkpru <- read.csv("./BCHAIN-MKPRU.csv")
+Bchain_Hrate <- read.csv("./BCHAIN-HRATE.csv")
+Bchain_Diff <- read.csv("./BCHAIN-DIFF.csv")
+```
+
+Na poniższych wykresach można zauważyć gwałtowny wzrost wartości Bitcoina w latach 2016-2018. Widoczny jest również brak danych z lat 2000-2008, jest to podstawą do odrzucenia zbioru, aby nie ograniczać już zakresu lat do analizy.
+
+```{r bitcoin data refactoring}
+btrvou <- Bchain_Trvou %>% mutate(Date = get_year(Date)) %>% filter(Date %in% c(2000:2018))
+btrvou <- aggregate(.~ Date, btrvou, mean, na.rm =TRUE, na.action = na.pass) 
+ggplot(btrvou, aes(x=Date, y=Value, group=1)) + geom_line() + geom_point() + ggtitle("Trvou")
+
+bmkpru <- Bchain_Mkpru %>% mutate(Date = get_year(Date)) %>% filter(Date %in% c(2000:2018))
+bmkpru <- aggregate(.~ Date, bmkpru, mean, na.rm =TRUE, na.action = na.pass) 
+ggplot(bmkpru, aes(x=Date, y=Value, group=1)) + geom_line() + geom_point() + ggtitle("Mkpru")
+
+bhrate <- Bchain_Hrate %>% mutate(Date = get_year(Date)) %>% filter(Date %in% c(2000:2018))
+bhrate <- aggregate(.~ Date, bhrate, mean, na.rm =TRUE, na.action = na.pass)
+ggplot(bhrate, aes(x=Date, y=Value, group=1)) + geom_line() + geom_point() + ggtitle("Hrate")
+
+bdiff <- Bchain_Diff %>% mutate(Date = get_year(Date)) %>% filter(Date %in% c(2000:2018))
+bdiff <- aggregate(.~ Date, bdiff, mean, na.rm =TRUE, na.action = na.pass) 
+ggplot(bdiff, aes(x=Date, y=Value, group=1)) + geom_line() + geom_point() + ggtitle("Diff")
+```
+
+
+## World Development Indicators
+
+```{r world development data reading}
+World_Development_Indicators_types <- read_excel("./World_Development_Indicators.xlsx", na="..")
+```
+
+Dane obejmują 205 krajów, z których każdy opisany jest za pomocą 213 atrybutów na przestrzeni lat 1970-2021. Zodnie z postawioną hipotezą, do dalszej wybrane zostały jedynie kraje kontynentu australijskiego. Ilość atrybutów również została ograniczona do tych, które można zdefiniować jako potencjalne nieszczęścia tudzież kryzysy. Są to:
+* Wskaźnik bezrobocia
+* Poziom emisji gazów cieplarnianych
+* Całkowite spożycie alkoholu na osobę powyżej 15 roku życia
+* Procent kobiet powyżej 65 roku życia
+* Procent mężczyzn powyżej 65 roku życia
+* Śmiertelność z powodu samobójstw
+* Liczność populacji
+* Procent ludzi zamieszkujących slumsy
+* Śmiertelność spowodowana wypadkami samochodowymi
+* Poziom emisji CO2
+* Średnia długość życia
+* Stosunek śmiertelności noworodków na 1000 porodóW
+* Liczba śmiertelności dzieci poniżej 5 roku życia
+* Wskaźnik PKB
+
+```{r australia data refactoring}
+australia_countries <- c("Australia", 
+                         "Papua New Guinea", 
+                         "New Zealand", "Fiji",
+                         "Solomon Islands", 
+                         "Micronesia", 
+                         "Vanuatu", 
+                         "Samoa", 
+                         "Kiribati", 
+                         "Tonga",
+                         "Marshall Islands", 
+                         "Palau", 
+                         "Tuvalu", 
+                         "Nauru")
+
+potential_misfortune <- c(
+  "Unemployment, total (% of total labor force) (national estimate)", 
+  "Total greenhouse gas emissions (kt of CO2 equivalent)", 
+  "Total alcohol consumption per capita (liters of pure alcohol, projected estimates, 15+ years of age)", 
+  "Survival to age 65, female (% of cohort)", 
+  "Survival to age 65, male (% of cohort)", 
+  "Suicide mortality rate (per 100,000 population)", 
+  "Population, total", 
+  "Population living in slums (% of urban population)", 
+  "Mortality caused by road traffic injury (per 100,000 population)", 
+  "CO2 emissions (kt)",
+  "Life expectancy at birth, total (years)", 
+  "Mortality rate, infant (per 1,000 live births)", 
+  "Number of under-five deaths", 
+  "GDP per capita (current US$)")
+
+aus<-World_Development_Indicators_types %>% filter(`Country Name` %in% australia_countries) %>% filter(`Series Name` %in% potential_misfortune ) %>% select(-c(2,4))  %>% select(-c(3:32)) %>% select(-c("2019 [YR2019]", "2020 [YR2020]"))
+summarize(aus)
+```
+
+Ze względu na odsetek wzrtości pustych i braku możliwości uśrednienia danych, należało zastanowić się jakie kraje i jakie atrybuty są powodem niepełnych danch. Ze względu na trójwymiarowość dancyh zadanie nie było takie oczywiste. Najlepszym rozwiązaniem w tym przypadku okazało się podsumowanie wartości pustych pod względem krajów i atrybutóW. Ze względu na wysoki procent wartości pustych wierszy o bezrobociu, spożyciu alkoholu oraz populacji slumsów, atrybuty te zostały usunięte. Po ponownym pogrupowaniu dancyh po kraju i zliczeniu wartości pustych okazało się, że miało to bardzo znaczący wpływ na ilość NA. Jedynymi krajami, które posiadały jakieś wartości puste były Tuvalu i Wyspy Marshalla. Prawdopodobnie są zbyt "wyluzowane", aby zadbać o właściwe zbieranie danych. Jest to podstawą do pozbycia się tych krajów ze zbioru.
+
+```{r australia data cleaning}
+aus <- aus %>% pivot_longer(-c("Country Name", "Series Name"), names_to = "Year", values_to = "Value")
+
+aus_grupped_by_country <- aus %>% group_by(`Country Name`) %>% summarize(na_values = sum(is.na(Value)))
+aus_grupped_by_country
+
+aus_grupped_by_series <- aus %>% group_by(`Series Name`) %>% summarize(na_values_percent = sum(is.na(Value)) / 190 * 100 )
+aus_grupped_by_series
+
+aus <- aus %>% filter(`Series Name` != "Unemployment, total (% of total labor force) (national estimate)") %>%
+  filter(`Series Name` != "Total alcohol consumption per capita (liters of pure alcohol, projected estimates, 15+ years of age)") %>%
+  filter(`Series Name` != "Population living in slums (% of urban population)")
+
+
+aus_grupped_by_country <- aus %>% group_by(`Country Name`) %>% summarize(na_values_percent = sum(is.na(Value)) / 190 * 100)
+aus_grupped_by_country
+
+aus <- aus %>% filter(`Country Name` != "Marshall Islands") %>% filter(`Country Name` != "Tuvalu")
+aus <- aus %>% mutate(Year = get_year(Year))
+```
+
+```{r australia data renaming, echo=FALSE}
+aus$`Series Name`[aus$`Series Name` == "Total greenhouse gas emissions (kt of CO2 equivalent)"] <- "Greenhouse_gas_emissions" 
+aus$`Series Name`[aus$`Series Name` == "Survival to age 65, female (% of cohort)"] <- "65_old_female" 
+aus$`Series Name`[aus$`Series Name` == "Survival to age 65, male (% of cohort)"] <- "65_old_male" 
+aus$`Series Name`[aus$`Series Name` == "Suicide mortality rate (per 100,000 population)"] <- "Suicide_mortality" 
+aus$`Series Name`[aus$`Series Name` == "Population, total"] <- "Population" 
+aus$`Series Name`[aus$`Series Name` == "Mortality caused by road traffic injury (per 100,000 population)"] <- "Traffic_injury_mortality" 
+aus$`Series Name`[aus$`Series Name` == "CO2 emissions (kt)"] <- "CO2_emissions" 
+aus$`Series Name`[aus$`Series Name` == "Life expectancy at birth, total (years)"] <- "Life_expectancy"
+aus$`Series Name`[aus$`Series Name` == "Mortality rate, infant (per 1,000 live births)"] <- "Infant_mortality"
+aus$`Series Name`[aus$`Series Name` == "GDP per capita (current US$)"] <- "GDP"
+aus$`Series Name`[aus$`Series Name` == "Number of under-five deaths"] <- "Under_five_deaths" 
+```
+
+Przed sprawdzeniem korelacji pomiędzy danymi o krajach australijskich oraz informacjami na temat światowej gospodarki, warto jeszcze sprawdzić poziom skorelowania wartości na zbiorze. Wielce prawdopodobne jest, że z niektórych danych można zrezygnować. Jako reprezentanta do sprawdzenia korealcji pomiędzy atrybutami, została wybrana Australia.
+
+Z poniższej macierzy można wywnioskować, że dość duża część argumentów jest ze sobą silnie skorelowana lub odwrotnie skorelowana. Na przykład śmiertelność w wypadkach drogowych można powiązać ze śmiertelnością dzieci poniżej 5 roku życia i śmiertelnością noworodków. Z kolei z danych wynika, że im mniej śmierci w wypadkach drogowych, tym większe PKB. Oczywistą zależnością jest tu liczebnośc populacji, średnia długość życia oraz Liczba osób powyżej 65 roku życia. Mało skorelowane z czymkolwiek są natomiast dane o samobójstwach i emisji gazów. Zatem do dalszej analizy zostały przekazane następujące dane: śmiertelnośc w wyniku samobójstw, emisja gazów cieplarniancyh oraz CO2 oraz śmiertelność w wypadkach drogowych.
+
+```{r}
+australia <- aus %>% filter(`Country Name` == "Australia") %>% pivot_wider(names_from = `Series Name`, values_from = Value)
+corr_aus <- cor(australia[-c(1,2)])
+corrplot(corr_aus, type="full", order="hclust", tl.col="black", tl.srt=45)
+aus <- aus %>% filter(`Series Name` %in% c("Suicide_mortality","Greenhouse_gas_emissions", "CO2_emissions", "Traffic_injury_mortality"))
+```
+
+# Analiza
+Do przeanalizowania korelacji wzięte pod uwagę są jedynie kraje, których walutą jest dolar australijski tzn. Australia i Kiribati. 
+Bardzo widoczną odwrtotną korelację na wykresie można zwuażyć przy wypadkach drogowych. Okazuje się, że im większy wskaźnik cen towarów i usług konsumpcyjnych oraz im większe ceny złota, tym mniej śmiertelnych wypadków drogowych. Świadczy to o tym, że Australijczycy nie są odporni na wszelkie zmiany gospodarcze na świecie. Nie przeczy to również ich wyluzowaniu, ponieważ pokazuje, że im gorsza sytuacja, tym mniej wypadków na drogach W przypadku Kiribati, taka zależność nie jest już tak mocno widoczna. Zamiast tego widać bardzo silne powiązanie pomiędzy emisją CO2 i gazów cieplarnianych. Jest to związane prawdopodniez tym, że Kiribati należy do 3 krajów o najmniejszej emisji dwutlenku węgla na świecie.
+
+```{r correlation australia kiribati}
+australia <-australia %>% select("Suicide_mortality","Greenhouse_gas_emissions", "CO2_emissions", "Traffic_injury_mortality", "Year")
+all_australia <- merge(x=sp, y=gold, by.y="Date", by.x="Year") %>% merge(aus_dollar, by="Year") %>% merge(australia, by="Year") %>% select(-"Year")
+corr_aus <- cor(all_australia)
+
+kiribati <- aus %>% filter(`Country Name` == "Kiribati") %>% pivot_wider(names_from = `Series Name`, values_from = Value) %>% select("Suicide_mortality","Greenhouse_gas_emissions", "CO2_emissions", "Traffic_injury_mortality", "Year")
+all_kiribati <- merge(x=sp, y=gold, by.y="Date", by.x="Year") %>% merge(aus_dollar, by="Year") %>% merge(kiribati, by="Year") %>% select(-"Year")
+corr_kiri <- cor(all_kiribati)
+
+corrplot(corr_aus, type="full", order="hclust", tl.col="black", tl.srt=45,title="Australia")
+corrplot(corr_kiri, type="full", order="hclust", tl.col="black", tl.srt=45,title="Kiribati")
+
+corr_aus <- as.data.frame(corr_aus)
+corr_aus$X <- colnames(corr_aus)
+corr_aus <- corr_aus %>% pivot_longer(-c("X"), names_to = "Y", values_to = "Correlation") %>% filter(X != Y) %>% arrange(desc(abs(Correlation))) %>% slice(which(row_number() %% 2 == 1)) %>% head(40)
+
+
+corr_kiri <- as.data.frame(corr_kiri)
+corr_kiri$X <- colnames(corr_kiri)
+corr_kiri <- corr_kiri %>% pivot_longer(-c("X"), names_to = "Y", values_to = "Correlation") %>% filter(X != Y) %>% arrange(desc(abs(Correlation))) %>% slice(which(row_number() %% 2 == 1)) %>% head(40)
+
+```
+
+### Korelacja Australia
+```{r corr show australia, echo = FALSE}
+prettyTable(corr_aus)
+```
+
+### Korelacja Kiribati
+```{r corr show kiribati, echo = FALSE}
+prettyTable(corr_kiri)
+```
+
+
+
+
+
+
